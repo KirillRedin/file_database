@@ -101,6 +101,25 @@ func (table *table) get_value(key string) string {
 	return data
 }
 
+func (table *table) set_value(key string, val string, name string) {
+	for _, element := range table.Elements.Element {
+		if element.Key == key {
+			element.Value = val
+			table.save(name)
+			return
+		}
+	}
+	element := element{XMLName: table.Elements.Element[0].XMLName, Key: key, Value: val}
+	table.Elements.Element = append(table.Elements.Element, element)
+
+	table.save(name)
+}
+
+func (table *table) save(name string) {
+	data, _ := xml.Marshal(table)
+	ioutil.WriteFile(name, data, 0644)
+}
+
 func main() {
 	// Listen for incoming connections.
 	c := cache{}
