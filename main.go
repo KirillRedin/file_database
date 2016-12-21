@@ -52,10 +52,10 @@ func parse_xml(name string) *table {
 }
 
 type cache struct {
-	tables []table
+	elements []element
 }
 
-func handleRequest(command string, c *cache, conn net.Conn) {
+func handleRequest(command string, c *cache, table_chan chan<- table, conn net.Conn) {
 	fmt.Println("handle request: " + command)
 
 	params := strings.Fields(command)
@@ -66,16 +66,38 @@ func handleRequest(command string, c *cache, conn net.Conn) {
 	switch strings.ToLower(params[0]) {
 	case "exit":
 		os.Exit(0)
+	case: ""
 
 		// TODO: patterns for queries
-
-	default:
-		conn.Write([]byte(string("Your command didn't match the pattern\n")))
+	if len(params) >= 2 {
+		switch strings.ToLower(query_split[1]) {
+			case "set":
+				setVal(c, table_chan, tables, query_split)
+			case "get":
+				getVal(c, tables, query_split)
+			case "delete":
+				delKey(c, table_chan, tables, query_split)
+			case "keys":
+				getKeys(c, tables, query_split)
+			default:
+				c.Write([]byte(string("Unknown command\n")))
+		}
+	} else if len(query_split) == 1 {
+		switch strings.ToLower(query_split[0]) {
+			case "exit":
+				exit(c)
+			case "help":
+				help(c)
+			default:
+				c.Write([]byte(string("Unknown command\n")))
+			}
+	} else {
+		c.Write([]byte(string("Unknown command\n")))
 	}
 }
 
 // Handles incoming requests.
-func handleConnection(conn net.Conn, c *cache) {
+func handleConnection(conn net.Conn, table_chan chan<- table, c *cache) {
 	// Make a buffer to hold incoming data.
 	var buf [512]byte
 	empty_string := ""
@@ -87,7 +109,7 @@ func handleConnection(conn net.Conn, c *cache) {
 		}
 		n := bytes.Index(buf[:], []byte{0})
 		s := string(buf[:n])
-		go handleRequest(s, c, conn)
+		go handleRequest(s, c, table_chan, conn)
 	}
 }
 
@@ -123,6 +145,8 @@ func (table *table) save(name string) {
 func main() {
 	// Listen for incoming connections.
 	c := cache{}
+	table_chan := make(chan table)
+	
 	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
@@ -141,6 +165,6 @@ func main() {
 			os.Exit(1)
 		}
 		// Handle connections in a new goroutine.
-		go handleConnection(conn, &c)
+		go handleConnection(conn, table_chan, &c)
 	}
 }
