@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/csv"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net"
@@ -20,9 +20,35 @@ const (
 )
 
 type table struct {
-	name     string
-	data     *[][]string
-	isLocked sync.Mutex
+	XMLName  xml.Name `xml:"table"`
+	Name     string   `xml:"name"`
+	Elements elements `xml:"elements"`
+}
+
+type elements struct {
+	XMLName xml.Name  `xml:"elements"`
+	Element []element `xml:"element"`
+}
+
+type element struct {
+	XMLName xml.Name `xml:"element"`
+	Key     string   `xml:"key"`
+	Value   string   `xml:"value"`
+}
+
+func parse_xml(name string) *table {
+	data, err := ioutil.ReadFile(name)
+	if err != nil {
+		return nil
+	}
+
+	table := &table{}
+
+	err = xml.Unmarshal(data, table)
+	if err != nil {
+		fmt.Print("Error")
+	}
+	return table
 }
 
 type cache struct {
@@ -63,6 +89,16 @@ func handleConnection(conn net.Conn, c *cache) {
 		s := string(buf[:n])
 		go handleRequest(s, c, conn)
 	}
+}
+
+func (table *table) get_value(key string) string {
+	data := ""
+	for _, element := range table.Elements.Element {
+		if element.Key == key {
+			data = element.Value
+		}
+	}
+	return data
 }
 
 func main() {
