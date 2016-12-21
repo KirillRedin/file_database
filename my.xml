@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Data>
-<Try>ewfweew</Try>
-</Data>
+<db>
+	<name> db1</name>
+	<tables>
+		<table>
+			<name> table 1</name>
+				<elements>
+					<element>
+						<key>key1</key>
+						<value>value 1</value>
+					</element>
+				</elements>
+		</table>
+	</tables>
+</db>

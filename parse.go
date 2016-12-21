@@ -7,24 +7,47 @@ import (
 	"io/ioutil"
 )
 
-type table struct {
-	XMLName xml.Name `xml:"Data"`
-	Try     string   `xml:"Try"`
+type db struct {
+	XMLName xml.Name `xml:"db"`
+	Nm      string   `xml:"name"`
+	Tbls    tables   `xml:"tables"`
 }
 
-func parse_xml(name string) *table {
-	key_val, err := ioutil.ReadFile(name)
+type tables struct {
+	XMLName xml.Name `xml:"tables"`
+	Tb      []table  `xml:"table"`
+}
+
+type table struct {
+	XMLName xml.Name `xml:"table"`
+	Nm      string   `xml:"name"`
+	Elms    elements `xml:"elements"`
+}
+
+type elements struct {
+	XMLName xml.Name  `xml:"elements"`
+	Elem    []element `xml:"element"`
+}
+
+type element struct {
+	XMLName xml.Name `xml:"element"`
+	Key     string   `xml:"key"`
+	Val     string   `xml:"value"`
+}
+
+func parse_xml(name string) *db {
+	data, err := ioutil.ReadFile(name)
 	if err != nil {
 		return nil
 	}
 
-	tab := &table{}
+	db := &db{}
 
-	err = xml.Unmarshal(key_val, tab)
+	err = xml.Unmarshal(data, db)
 	if err != nil {
-		return nil
+		fmt.Print("Error")
 	}
-	return tab
+	return db
 }
 
 func main() {
