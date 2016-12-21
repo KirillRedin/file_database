@@ -92,13 +92,12 @@ func handleConnection(conn net.Conn, c *cache) {
 }
 
 func (table *table) get_value(key string) string {
-	data := ""
 	for _, element := range table.Elements.Element {
 		if element.Key == key {
-			data = element.Value
+			return element.Value
 		}
 	}
-	return data
+	return ""
 }
 
 func (table *table) set_value(key string, val string, name string) {
