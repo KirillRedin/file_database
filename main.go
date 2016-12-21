@@ -114,13 +114,12 @@ func handleConnection(conn net.Conn, table_chan chan<- table, c *cache) {
 }
 
 func (table *table) get_value(key string) string {
-	data := ""
 	for _, element := range table.Elements.Element {
 		if element.Key == key {
-			data = element.Value
+			return element.Value
 		}
 	}
-	return data
+	return ""
 }
 
 func (table *table) set_value(key string, val string, name string) {
@@ -135,6 +134,23 @@ func (table *table) set_value(key string, val string, name string) {
 	table.Elements.Element = append(table.Elements.Element, element)
 
 	table.save(name)
+}
+
+// without saving order
+func remove_from_slice(s []element, i int) []element {
+	s[len(s)-1], s[i] = s[i], s[len(s)-1]
+	return s[:len(s)-1]
+}
+
+func (table *table) del_key(key string, file_name string) bool {
+	for i, element := range table.Elements.Element {
+		if element.Key == key {
+			table.Elements.Element = remove_from_slice(table.Elements.Element, i)
+			table.save(file_name)
+			return true
+		}
+	}
+	return false
 }
 
 func (table *table) save(name string) {
