@@ -1,16 +1,17 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
+	//	"bufio"
+	//	"bytes"
 	"encoding/xml"
 	"fmt"
-	"io"
+	"io/ioutil"
+	//	"io"
 	"net"
 	"os"
-	"regexp"
+	//	"regexp"
 	"strings"
-	"sync"
+	//	"sync"
 )
 
 const (
@@ -20,14 +21,9 @@ const (
 )
 
 type table struct {
-	XMLName  xml.Name `xml:"table"`
-	Name     string   `xml:"name"`
-	Elements elements `xml:"elements"`
-}
-
-type elements struct {
-	XMLName xml.Name  `xml:"elements"`
-	Element []element `xml:"element"`
+	XMLName  xml.Name  `xml:"table"`
+	Name     string    `xml:"name"`
+	Elements []element `xml:"element"`
 }
 
 type element struct {
@@ -52,10 +48,10 @@ func parse_xml(name string) *table {
 }
 
 type cache struct {
-	elements []element
+	tables []table
 }
 
-func handleRequest(command string, c *cache, table_chan chan<- table, conn net.Conn) {
+func handleRequest(command string, c *cache, conn net.Conn) {
 	fmt.Println("handle request: " + command)
 
 	params := strings.Fields(command)
@@ -63,77 +59,131 @@ func handleRequest(command string, c *cache, table_chan chan<- table, conn net.C
 	fmt.Println(params)
 	fmt.Println(params[0])
 	// remove empty entries and remove whitespaces
-	switch strings.ToLower(params[0]) {
-	case "exit":
-		os.Exit(0)
-	case: ""
+	// TODO: patterns for queries
 
-		// TODO: patterns for queries
 	if len(params) >= 2 {
-		switch strings.ToLower(query_split[1]) {
-			case "set":
-				setVal(c, table_chan, tables, query_split)
-			case "get":
-				getVal(c, tables, query_split)
-			case "delete":
-				delKey(c, table_chan, tables, query_split)
-			case "keys":
-				getKeys(c, tables, query_split)
-			default:
-				c.Write([]byte(string("Unknown command\n")))
+		switch strings.ToLower(params[1]) {
+		case "set":
+			set_value(conn, c, params)
+		case "get":
+			get_value(conn, c, params)
+		case "delete":
+			del_key(conn, c, params)
+		case "keys":
+			get_keys(conn, c, params)
+		default:
+			conn.Write([]byte(string("Unknown command\n")))
 		}
-	} else if len(query_split) == 1 {
-		switch strings.ToLower(query_split[0]) {
-			case "exit":
-				exit(c)
-			case "help":
-				help(c)
-			default:
-				c.Write([]byte(string("Unknown command\n")))
-			}
+	} else if len(params) == 1 {
+		switch strings.ToLower(params[0]) {
+		case "exit":
+			exit(conn)
+		default:
+			conn.Write([]byte(string("Unknown command\n")))
+		}
 	} else {
-		c.Write([]byte(string("Unknown command\n")))
+		conn.Write([]byte(string("Unknown command\n")))
 	}
 }
 
 // Handles incoming requests.
-func handleConnection(conn net.Conn, table_chan chan<- table, c *cache) {
+func handleConnection(conn net.Conn, c *cache) {
 	// Make a buffer to hold incoming data.
-	var buf [512]byte
-	empty_string := ""
+	buf := make([]byte, 4096)
 	for {
-		copy(buf[:], empty_string) //make  buffer empty
-		_, err := conn.Read(buf[0:])
-		if err != nil {
-			return
+		n, err := conn.Read(buf)
+		if (err != nil) || (n == 0) {
+			break
+		} else {
+			go handleRequest(string(buf[0:n]), c, conn)
 		}
-		n := bytes.Index(buf[:], []byte{0})
-		s := string(buf[:n])
-		go handleRequest(s, c, table_chan, conn)
 	}
 }
 
-func (table *table) get_value(key string) string {
-	for _, element := range table.Elements.Element {
-		if element.Key == key {
-			return element.Value
+func get_table(c *cache, params []string) *table {
+
+	for _, table := range c.tables {
+		if table.Name == params[0] {
+			for _, element := range table.Elements {
+				if params[1] != "keys" && element.Key == params[2] {
+					return &table
+				}
+			}
 		}
 	}
-	return ""
+
+	table := parse_xml(params[0])
+
+	if table != nil {
+		c.tables = append(c.tables, *table)
+	}
+	return table
 }
 
-func (table *table) set_value(key string, val string, name string) {
-	for _, element := range table.Elements.Element {
-		if element.Key == key {
-			element.Value = val
-			table.save(name)
-			return
+func get_keys(conn net.Conn, c *cache, params []string) {
+	if len(params) == 2 {
+		table := get_table(c, params)
+		if table == nil {
+			conn.Write([]byte(string("Unknown table\n")))
+		} else {
+			keys := make([]string, 0, len(table.Elements))
+			for _, element := range table.Elements {
+				keys = append(keys, element.Key)
+			}
+			conn.Write([]byte("[" + strings.Join(keys, ", ") + "]" + "\n"))
 		}
+	} else {
+		conn.Write([]byte(string("Unknown command\n")))
 	}
-	element := element{XMLName: table.Elements.Element[0].XMLName, Key: key, Value: val}
-	table.Elements.Element = append(table.Elements.Element, element)
+}
 
-	table.save(name)
+func get_value(conn net.Conn, c *cache, params []string) {
+	if len(params) == 3 {
+		table := get_table(c, params)
+		if table == nil {
+			conn.Write([]byte(string("Unknown table\n")))
+		} else {
+			for _, element := range table.Elements {
+				if element.Key == params[2] {
+					conn.Write([]byte(string(element.Value + "\n")))
+					return
+				}
+			}
+			conn.Write([]byte(string("key does not exist\n")))
+		}
+	} else {
+		conn.Write([]byte(string("Unknown command\n")))
+	}
+}
+
+func set_value(conn net.Conn, c *cache, params []string) {
+
+	if len(params) >= 4 {
+		table := get_table(c, params)
+		if table == nil {
+			conn.Write([]byte(string("Unknown table\n")))
+		}
+
+		for _, element := range table.Elements {
+			if element.Key == params[2] {
+
+				element.Value = strings.Join(params[3:], " ")
+				table.save(params[0])
+				update_cache(c, params[0])
+				conn.Write([]byte(string("OK\n")))
+				return
+			}
+		}
+		element := element{XMLName: xml.Name{Local: "element"}, Key: params[2], Value: strings.Join(params[3:], " ")}
+		table.Elements = append(table.Elements, element)
+		table.save(params[0])
+		update_cache(c, params[0])
+		conn.Write([]byte(string("OK\n")))
+		return
+	} else {
+		conn.Write([]byte(string("Unknown command\n")))
+		return
+	}
 }
 
 // without saving order
@@ -142,15 +192,42 @@ func remove_from_slice(s []element, i int) []element {
 	return s[:len(s)-1]
 }
 
-func (table *table) del_key(key string, file_name string) bool {
-	for i, element := range table.Elements.Element {
-		if element.Key == key {
-			table.Elements.Element = remove_from_slice(table.Elements.Element, i)
-			table.save(file_name)
-			return true
+func update_cache(c *cache, name string) {
+
+	for i, table := range c.tables {
+		if table.Name == name {
+			//			c.tables = append(c.tables[:i], c.tables[(i+1):])
+			if len(c.tables) != i {
+				c.tables = c.tables[:i+copy(c.tables[i:], c.tables[i+1:])]
+			} else {
+				c.tables = c.tables[:len(c.tables)-1]
+			}
 		}
 	}
-	return false
+}
+
+func del_key(conn net.Conn, c *cache, params []string) {
+
+	if len(params) == 3 {
+		table := get_table(c, params)
+		if table == nil {
+			conn.Write([]byte(string("Unknown table\n")))
+		} else {
+
+			for i, element := range table.Elements {
+				if element.Key == params[2] {
+					table.Elements = remove_from_slice(table.Elements, i)
+					table.save(params[0])
+					update_cache(c, params[0])
+					conn.Write([]byte(string("OK\n")))
+					return
+				}
+			}
+			conn.Write([]byte(string("key does not exist\n")))
+		}
+	} else {
+		conn.Write([]byte(string("Unknown command\n")))
+	}
 }
 
 func (table *table) save(name string) {
@@ -158,11 +235,15 @@ func (table *table) save(name string) {
 	ioutil.WriteFile(name, data, 0644)
 }
 
+func exit(conn net.Conn) {
+	conn.Write([]byte(string("Bye\n")))
+	conn.Close()
+}
+
 func main() {
 	// Listen for incoming connections.
 	c := cache{}
-	table_chan := make(chan table)
-	
+
 	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
@@ -181,6 +262,6 @@ func main() {
 			os.Exit(1)
 		}
 		// Handle connections in a new goroutine.
-		go handleConnection(conn, table_chan, &c)
+		go handleConnection(conn, &c)
 	}
 }
