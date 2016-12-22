@@ -1,267 +1,234 @@
 package main
 
 import (
-	//	"bufio"
-	//	"bytes"
-	"encoding/xml"
-	"fmt"
+	"encoding/json"
 	"io/ioutil"
-	//	"io"
+	"sync"
+	"fmt"
 	"net"
 	"os"
-	//	"regexp"
 	"strings"
-	//	"sync"
 )
 
-const (
-	CONN_HOST = "localhost"
-	CONN_PORT = "8888"
-	CONN_TYPE = "tcp"
+var (
+	gtm sync.Mutex
 )
 
-type table struct {
-	XMLName  xml.Name  `xml:"table"`
-	Name     string    `xml:"name"`
-	Elements []element `xml:"element"`
+type TablesInMemory []*Table
+
+type Table struct {
+	name string
+	data map[string]string
+	m sync.RWMutex
 }
 
-type element struct {
-	XMLName xml.Name `xml:"element"`
-	Key     string   `xml:"key"`
-	Value   string   `xml:"value"`
+func NewTable(file_name string, data map[string]string) *Table {
+	return &Table{name: file_name, data: data,}
 }
 
-func parse_xml(name string) *table {
-	data, err := ioutil.ReadFile(name)
+func DecodeJSON(file_name string) *Table{
+	key_val, err := ioutil.ReadFile("data/" + file_name)
 	if err != nil {
-		return nil
+		return nil 
 	}
-
-	table := &table{}
-
-	err = xml.Unmarshal(data, table)
-	if err != nil {
-		fmt.Print("Error")
+	var f map[string]string
+    err = json.Unmarshal(key_val, &f)
+    if err != nil {
+		return nil 
 	}
+    t := NewTable(file_name, f)
+	return t
+}
+
+func EncodeJSON(tablechan <-chan Table) {
+	for {
+		table := <-tablechan
+		jsonData, _ := json.Marshal(table.data)
+		f, err := os.Create("data/" + table.name)
+	    checkErr(err)
+	    defer f.Close()
+	    _, err = f.Write(jsonData)
+	    checkErr(err)
+	}
+}
+
+func checkErr(e error) {
+	if e != nil {
+		panic(e)
+	}
+}
+
+func getTable(tables *TablesInMemory, name string) *Table {
+	gtm.Lock()
+	for i := range *tables {
+		if (*tables)[i].name == name {
+			gtm.Unlock()
+			return (*tables)[i]
+		}
+	}
+	
+	table := DecodeJSON(name)
+
+	if table != nil {
+		*tables = append(*tables, table)
+	}
+	gtm.Unlock()
 	return table
 }
 
-type cache struct {
-	tables []table
+func exit(c net.Conn) {
+	c.Write([]byte(string("Bye\n")))
+	c.Close()
 }
 
-func handleRequest(command string, c *cache, conn net.Conn) {
-	fmt.Println("handle request: " + command)
+func help(c net.Conn) {
+	c.Write([]byte(string("[table name] get [key]\n")))
+	c.Write([]byte(string("[table name] set [key] [value]\n")))
+	c.Write([]byte(string("[table name] del [key]\n")))
+	c.Write([]byte(string("[table name] keys\n")))
+	c.Write([]byte(string("exit\n")))
+}
 
-	params := strings.Fields(command)
-	// remove empty entries and remove whitespaces
-	fmt.Println(params)
-	fmt.Println(params[0])
-	// remove empty entries and remove whitespaces
-	// TODO: patterns for queries
-
-	if len(params) >= 2 {
-		switch strings.ToLower(params[1]) {
-		case "set":
-			set_value(conn, c, params)
-		case "get":
-			get_value(conn, c, params)
-		case "delete":
-			del_key(conn, c, params)
-		case "keys":
-			get_keys(conn, c, params)
-		default:
-			conn.Write([]byte(string("Unknown command\n")))
-		}
-	} else if len(params) == 1 {
-		switch strings.ToLower(params[0]) {
-		case "exit":
-			exit(conn)
-		default:
-			conn.Write([]byte(string("Unknown command\n")))
+func getKeys(c net.Conn, tables *TablesInMemory, query_split []string) {
+	if len(query_split) == 2  {
+		table := getTable(tables, query_split[0])
+		if (table == nil) {
+			c.Write([]byte(string("Unknown table\n")))
+		} else {
+			table.m.RLock()
+			keys := make([]string, 0, len(table.data))
+		    for k := range table.data {
+		        keys = append(keys, k)
+		    }
+		    table.m.RUnlock()
+    		c.Write([]byte("[" + strings.Join(keys, ", ") + "]" + "\n"))
 		}
 	} else {
-		conn.Write([]byte(string("Unknown command\n")))
+		c.Write([]byte(string("Unknown command\n")))
 	}
 }
 
-// Handles incoming requests.
-func handleConnection(conn net.Conn, c *cache) {
-	// Make a buffer to hold incoming data.
+func getVal(c net.Conn, tables *TablesInMemory, query_split []string) {
+	if len(query_split) == 3  {
+		table := getTable(tables, query_split[0])
+		if (table == nil) {
+			c.Write([]byte(string("Unknown table\n")))
+		} else {
+			table.m.RLock()
+			value, ok := table.data[query_split[2]]
+			table.m.RUnlock()
+			if ok {
+				c.Write([]byte(string(value + "\n")))
+			} else {
+				c.Write([]byte(string("key does not exist\n")))
+			}
+		}
+	} else {
+		c.Write([]byte(string("Unknown command\n")))
+	}
+}
+
+func setVal(c net.Conn, tablechan chan<- Table, tables *TablesInMemory, query_split []string) {
+	if len(query_split) >= 4 {
+		table := getTable(tables, query_split[0])
+		if (table == nil) {
+			table = NewTable(query_split[0], make(map[string]string))
+		} 
+		table.m.Lock()
+		table.data[query_split[2]] = strings.Join(query_split[3: ], " ")
+		table.m.Unlock()
+		c.Write([]byte(string("OK\n")))
+		tablechan <- *table
+	} else {
+		c.Write([]byte(string("Unknown command\n")))
+	}
+}
+
+func delKey(c net.Conn, tablechan chan<- Table, tables *TablesInMemory, query_split []string) {
+	if len(query_split) == 3  {
+		table := getTable(tables, query_split[0])
+		if (table == nil) {
+			c.Write([]byte(string("Unknown table\n")))
+		} else {
+			table.m.RLock()
+			_, ok := table.data[query_split[2]]
+			table.m.RUnlock()
+			if ok {
+				table.m.Lock()
+				delete(table.data, query_split[2])
+				table.m.Unlock()
+				c.Write([]byte(string("OK\n")))
+				tablechan <- *table
+			} else {
+				c.Write([]byte(string("key does not exist\n")))
+			}
+		}
+	} else {
+		c.Write([]byte(string("Unknown command\n")))
+	}
+}
+
+func handleRequest(c net.Conn, tablechan chan<- Table, tables *TablesInMemory, query string) {
+	query_split := strings.Fields(query)
+
+	if len(query_split) >= 2 {
+		switch strings.ToLower(query_split[1]) {
+			case "set":
+				setVal(c, tablechan, tables, query_split)
+			case "get":
+				getVal(c, tables, query_split)
+			case "del":
+				delKey(c, tablechan, tables, query_split)
+			case "keys":
+				getKeys(c, tables, query_split)
+			default:
+				c.Write([]byte(string("Unknown command\n")))
+		}
+	} else if len(query_split) == 1 {
+		switch strings.ToLower(query_split[0]) {
+			case "exit":
+				exit(c)
+			case "help":
+				help(c)
+			default:
+				c.Write([]byte(string("Unknown command\n")))
+			}
+	} else {
+		c.Write([]byte(string("Unknown command\n")))
+	}
+}
+
+func handleConnection(c net.Conn, tablechan chan<- Table, tables *TablesInMemory) {
 	buf := make([]byte, 4096)
 	for {
-		n, err := conn.Read(buf)
+		n, err := c.Read(buf)
 		if (err != nil) || (n == 0) {
 			break
 		} else {
-			go handleRequest(string(buf[0:n]), c, conn)
+			go handleRequest(c, tablechan, tables, string(buf[0:n]))
 		}
 	}
-}
-
-func get_table(c *cache, params []string) *table {
-
-	for _, table := range c.tables {
-		if table.Name == params[0] {
-			for _, element := range table.Elements {
-				if params[1] != "keys" && element.Key == params[2] {
-					return &table
-				}
-			}
-		}
-	}
-
-	table := parse_xml(params[0])
-
-	if table != nil {
-		c.tables = append(c.tables, *table)
-	}
-	return table
-}
-
-func get_keys(conn net.Conn, c *cache, params []string) {
-	if len(params) == 2 {
-		table := get_table(c, params)
-		if table == nil {
-			conn.Write([]byte(string("Unknown table\n")))
-		} else {
-			keys := make([]string, 0, len(table.Elements))
-			for _, element := range table.Elements {
-				keys = append(keys, element.Key)
-			}
-			conn.Write([]byte("[" + strings.Join(keys, ", ") + "]" + "\n"))
-		}
-	} else {
-		conn.Write([]byte(string("Unknown command\n")))
-	}
-}
-
-func get_value(conn net.Conn, c *cache, params []string) {
-	if len(params) == 3 {
-		table := get_table(c, params)
-		if table == nil {
-			conn.Write([]byte(string("Unknown table\n")))
-		} else {
-			for _, element := range table.Elements {
-				if element.Key == params[2] {
-					conn.Write([]byte(string(element.Value + "\n")))
-					return
-				}
-			}
-			conn.Write([]byte(string("key does not exist\n")))
-		}
-	} else {
-		conn.Write([]byte(string("Unknown command\n")))
-	}
-}
-
-func set_value(conn net.Conn, c *cache, params []string) {
-
-	if len(params) >= 4 {
-		table := get_table(c, params)
-		if table == nil {
-			conn.Write([]byte(string("Unknown table\n")))
-		}
-
-		for _, element := range table.Elements {
-			if element.Key == params[2] {
-
-				element.Value = strings.Join(params[3:], " ")
-				table.save(params[0])
-				update_cache(c, params[0])
-				conn.Write([]byte(string("OK\n")))
-				return
-			}
-		}
-		element := element{XMLName: xml.Name{Local: "element"}, Key: params[2], Value: strings.Join(params[3:], " ")}
-		table.Elements = append(table.Elements, element)
-		table.save(params[0])
-		update_cache(c, params[0])
-		conn.Write([]byte(string("OK\n")))
-		return
-	} else {
-		conn.Write([]byte(string("Unknown command\n")))
-		return
-	}
-}
-
-// without saving order
-func remove_from_slice(s []element, i int) []element {
-	s[len(s)-1], s[i] = s[i], s[len(s)-1]
-	return s[:len(s)-1]
-}
-
-func update_cache(c *cache, name string) {
-
-	for i, table := range c.tables {
-		if table.Name == name {
-			//			c.tables = append(c.tables[:i], c.tables[(i+1):])
-			if len(c.tables) != i {
-				c.tables = c.tables[:i+copy(c.tables[i:], c.tables[i+1:])]
-			} else {
-				c.tables = c.tables[:len(c.tables)-1]
-			}
-		}
-	}
-}
-
-func del_key(conn net.Conn, c *cache, params []string) {
-
-	if len(params) == 3 {
-		table := get_table(c, params)
-		if table == nil {
-			conn.Write([]byte(string("Unknown table\n")))
-		} else {
-
-			for i, element := range table.Elements {
-				if element.Key == params[2] {
-					table.Elements = remove_from_slice(table.Elements, i)
-					table.save(params[0])
-					update_cache(c, params[0])
-					conn.Write([]byte(string("OK\n")))
-					return
-				}
-			}
-			conn.Write([]byte(string("key does not exist\n")))
-		}
-	} else {
-		conn.Write([]byte(string("Unknown command\n")))
-	}
-}
-
-func (table *table) save(name string) {
-	data, _ := xml.Marshal(table)
-	ioutil.WriteFile(name, data, 0644)
-}
-
-func exit(conn net.Conn) {
-	conn.Write([]byte(string("Bye\n")))
-	conn.Close()
 }
 
 func main() {
-	// Listen for incoming connections.
-	c := cache{}
-
-	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
+	ln, err := net.Listen("tcp", ":2222")
 	if err != nil {
-		fmt.Println("Error listening:", err.Error())
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	// Close the listener when the application closes.
-	defer l.Close()
-	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
-	for {
-		// Listen for an incoming connection.
-		conn, err := l.Accept()
-		fmt.Println("accept")
+	defer ln.Close()
+	var tables TablesInMemory
 
+	tablechan := make(chan Table)
+	go EncodeJSON(tablechan)
+	for {
+		conn, err := ln.Accept()
 		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
-			os.Exit(1)
+			fmt.Println(err)
+			continue
 		}
-		// Handle connections in a new goroutine.
-		go handleConnection(conn, &c)
+		defer conn.Close()
+		go handleConnection(conn, tablechan, &tables)
 	}
 }
+
