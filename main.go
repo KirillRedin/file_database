@@ -11,7 +11,7 @@ import (
 	"os"
 	//	"regexp"
 	"strings"
-	//	"sync"
+	"sync"
 )
 
 const (
@@ -24,6 +24,7 @@ type table struct {
 	XMLName  xml.Name  `xml:"table"`
 	Name     string    `xml:"name"`
 	Elements []element `xml:"element"`
+	m        sync.RWMutex
 }
 
 type element struct {
@@ -47,9 +48,7 @@ func parse_xml(name string) *table {
 	return table
 }
 
-type cache struct {
-	tables []table
-}
+type cache []*table
 
 func handleRequest(command string, c *cache, conn net.Conn) {
 	fmt.Println("handle request: " + command)
@@ -102,11 +101,11 @@ func handleConnection(conn net.Conn, c *cache) {
 
 func get_table(c *cache, params []string) *table {
 
-	for _, table := range c.tables {
+	for _, table := range *c {
 		if table.Name == params[0] {
 			for _, element := range table.Elements {
 				if params[1] != "keys" && element.Key == params[2] {
-					return &table
+					return table
 				}
 			}
 		}
@@ -115,7 +114,7 @@ func get_table(c *cache, params []string) *table {
 	table := parse_xml(params[0])
 
 	if table != nil {
-		c.tables = append(c.tables, *table)
+		*c = append(*c, table)
 	}
 	return table
 }
@@ -137,7 +136,7 @@ func get_keys(conn net.Conn, c *cache, params []string) {
 	}
 }
 
-func get_value(conn net.Conn, c *cache, params []string) {
+func get_value(conn net.Conn, c *cache, params []string) string {
 	if len(params) == 3 {
 		table := get_table(c, params)
 		if table == nil {
@@ -146,14 +145,17 @@ func get_value(conn net.Conn, c *cache, params []string) {
 			for _, element := range table.Elements {
 				if element.Key == params[2] {
 					conn.Write([]byte(string(element.Value + "\n")))
-					return
+					return element.Key
 				}
 			}
 			conn.Write([]byte(string("key does not exist\n")))
+			return ""
 		}
 	} else {
 		conn.Write([]byte(string("Unknown command\n")))
+		return ""
 	}
+	return ""
 }
 
 func set_value(conn net.Conn, c *cache, params []string) {
@@ -164,6 +166,7 @@ func set_value(conn net.Conn, c *cache, params []string) {
 			conn.Write([]byte(string("Unknown table\n")))
 		}
 
+		table.m.Lock()
 		for _, element := range table.Elements {
 			if element.Key == params[2] {
 
@@ -176,6 +179,7 @@ func set_value(conn net.Conn, c *cache, params []string) {
 		}
 		element := element{XMLName: xml.Name{Local: "element"}, Key: params[2], Value: strings.Join(params[3:], " ")}
 		table.Elements = append(table.Elements, element)
+		//		table.m.Lock()
 		table.save(params[0])
 		update_cache(c, params[0])
 		conn.Write([]byte(string("OK\n")))
@@ -194,13 +198,12 @@ func remove_from_slice(s []element, i int) []element {
 
 func update_cache(c *cache, name string) {
 
-	for i, table := range c.tables {
+	for i, table := range *c {
 		if table.Name == name {
-			//			c.tables = append(c.tables[:i], c.tables[(i+1):])
-			if len(c.tables) != i {
-				c.tables = c.tables[:i+copy(c.tables[i:], c.tables[i+1:])]
+			if len(*c) != i {
+				*c = (*c)[:i+copy((*c)[i:], (*c)[i+1:])]
 			} else {
-				c.tables = c.tables[:len(c.tables)-1]
+				*c = (*c)[:len(*c)-1]
 			}
 		}
 	}
@@ -213,7 +216,7 @@ func del_key(conn net.Conn, c *cache, params []string) {
 		if table == nil {
 			conn.Write([]byte(string("Unknown table\n")))
 		} else {
-
+			table.m.Lock()
 			for i, element := range table.Elements {
 				if element.Key == params[2] {
 					table.Elements = remove_from_slice(table.Elements, i)
@@ -231,6 +234,8 @@ func del_key(conn net.Conn, c *cache, params []string) {
 }
 
 func (table *table) save(name string) {
+	//	table.m.Lock()
+	fmt.Println("some")
 	data, _ := xml.Marshal(table)
 	ioutil.WriteFile(name, data, 0644)
 }
@@ -242,7 +247,7 @@ func exit(conn net.Conn) {
 
 func main() {
 	// Listen for incoming connections.
-	c := cache{}
+	var c cache
 
 	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
 	if err != nil {
@@ -251,6 +256,9 @@ func main() {
 	}
 	// Close the listener when the application closes.
 	defer l.Close()
+
+	tablechan := make(chan table)
+
 	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
 	for {
 		// Listen for an incoming connection.
